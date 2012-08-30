@@ -1939,6 +1939,56 @@ $(document).ready(function() {
 			equal( child3.get('children').length, 0 );
 		});
 		
+		test( "Creating a model shouldn't affect all hasMany collections", function() {
+			var Activity = Backbone.RelationalModel.extend();
+			var Activities = Backbone.Collection.extend({
+				model: Activity
+			});
+			var Lead = Backbone.RelationalModel.extend({
+				relations: [
+					{
+						type: Backbone.HasMany,
+						key: 'activities_a',
+						relatedModel: Activity,
+						collectionType: Activities,
+						reverseRelation: {
+							key: 'lead',
+							includeInJSON: 'id',
+							keyDestination: 'lead_id'
+						}
+					},
+					{
+						type: Backbone.HasMany,
+						key: 'activities_b',
+						relatedModel: Activity,
+						collectionType: Activities,
+						reverseRelation: {
+							key: 'lead',
+							includeInJSON: 'id',
+							keyDestination: 'lead_id'
+						}
+					}
+				]
+			});
+
+			var lead = new Lead({ id: 'lead_1' });
+
+			// lead should have no activities
+			equal ( lead.get('activities_a').length, 0 );
+			equal ( lead.get('activities_b').length, 0 );
+
+			// add an activity to 'activities_a'
+			lead.get('activities_a').add(new Activity({ id: 'act_1', lead: lead }));
+			equal ( lead.get('activities_a').length, 1 );
+			equal ( lead.get('activities_b').length, 0 );
+
+			// now let's create an activity with a lead, but dont put it in either 
+			// bucket of 'activities_a' or 'activities_b'
+			new Activity({ id: 'act_2', lead: lead });
+			equal ( lead.get('activities_a').length, 1 );
+			equal ( lead.get('activities_b').length, 0 );
+		});
+
 		test( "Add an already existing model (reverseRelation shouldn't exist yet) to a relation as a hash", function() {
 			// This test caused a race condition to surface:
 			// The 'relation's constructor initializes the 'reverseRelation', which called 'relation.addRelated' in it's 'initialize'.
