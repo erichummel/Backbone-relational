@@ -1,5 +1,5 @@
 /**
- * Backbone-relational.js 0.5.0
+ * Backbone-relational.js 0.6.0
  * (c) 2011 Paul Uithol
  * 
  * Backbone-relational may be freely distributed under the MIT license; see the accompanying LICENSE.txt.
@@ -237,7 +237,7 @@
 				});
 			
 			if ( !coll ) {
-				coll = this._createCollection( model );
+				coll = this._createCollection( rootModel );
 			}
 			
 			return coll;
@@ -288,17 +288,23 @@
 		 * Find the attribute that is to be used as the `id` on a given object
 		 * @param type
 		 * @param {String|Number|Object|Backbone.RelationalModel} item
+		 * @return {String|Number}
 		 */
 		resolveIdForItem: function( type, item ) {
 			var id = _.isString( item ) || _.isNumber( item ) ? item : null;
 
-			if ( id == null ) {
+			if ( id === null ) {
 				if ( item instanceof Backbone.RelationalModel ) {
 					id = item.id;
 				}
 				else if ( _.isObject( item ) ) {
 					id = item[ type.prototype.idAttribute ];
 				}
+			}
+
+			// Make all falsy values `null` (except for 0, which could be an id.. see '/issues/179')
+			if ( !id && id !== 0 ) {
+				id = null;
 			}
 
 			return id;
@@ -331,11 +337,18 @@
 		 * @param {Backbone.RelationalModel} model
 		 */
 		register: function( model ) {
-			var modelColl = model.collection;
 			var coll = this.getCollection( model );
-			coll && coll.add( model );
-			model.bind( 'destroy', this.unregister, this );
-			model.collection = modelColl;
+
+			if ( coll ) {
+				if ( coll.get( model ) ) {
+					throw new Error( "Cannot instantiate more than one Backbone.RelationalModel with the same id per type!" );
+				}
+
+				var modelColl = model.collection;
+				coll.add( model );
+				model.bind( 'destroy', this.unregister, this );
+				model.collection = modelColl;
+			}
 		},
 		
 		/**
@@ -640,7 +653,7 @@
 			if ( item instanceof this.relatedModel ) {
 				model = item;
 			}
-			else if ( item ) {
+			else if ( item || item === 0 ) { // since 0 can be a valid `id` as well
 				model = this.relatedModel.findOrCreate( item, { create: this.options.createModels } );
 			}
 			
@@ -714,9 +727,9 @@
 			options = this.sanitizeOptions( options );
 			
 			var item = this.keyContents;
-			if ( item ) {
+			if ( item || item === 0 ) { // since 0 can be a valid `id` as well
 				var id = Backbone.Relational.store.resolveIdForItem( this.relatedModel, item );
-				if ( model.id === id ) {
+				if ( !_.isNull( id ) && model.id === id ) {
 					this.addRelated( model, options );
 				}
 			}
@@ -840,7 +853,7 @@
 							if ( item instanceof this.relatedModel ) {
 								model = item;
 							}
-							else {
+							else if ( item || item === 0 ) { // since 0 can be a valid `id` as well
 								model = this.relatedModel.findOrCreate( item, { create: this.options.createModels } );
 							}
 
@@ -910,7 +923,7 @@
 				// Check if this new model was specified in 'this.keyContents'
 				var item = _.any( this.keyContents, function( item ) {
 						var id = Backbone.Relational.store.resolveIdForItem( this.relatedModel, item );
-						return id && id === model.id;
+						return !_.isNull( id ) && id === model.id;
 					}, this );
 				
 				if ( item ) {
@@ -1143,8 +1156,8 @@
 		/**
 		 * Retrieve related objects.
 		 * @param key {string} The relation key to fetch models for.
-		 * @param options {Object} Options for 'Backbone.Model.fetch' and 'Backbone.sync'.
-		 * @param update {boolean} Whether to force a fetch from the server (updating existing models).
+		 * @param [options] {Object} Options for 'Backbone.Model.fetch' and 'Backbone.sync'.
+		 * @param [update=false] {boolean} Whether to force a fetch from the server (updating existing models).
 		 * @return {jQuery.when[]} An array of request objects
 		 */
 		fetchRelated: function( key, options, update ) {
@@ -1155,7 +1168,7 @@
 				keyContents = rel && rel.keyContents,
 				toFetch = keyContents && _.select( _.isArray( keyContents ) ? keyContents : [ keyContents ], function( item ) {
 					var id = Backbone.Relational.store.resolveIdForItem( rel.relatedModel, item );
-					return id && ( update || !Backbone.Relational.store.find( rel.relatedModel, id ) );
+					return !_.isNull( id ) && ( update || !Backbone.Relational.store.find( rel.relatedModel, id ) );
 				}, this );
 			
 			if ( toFetch && toFetch.length ) {
@@ -1424,6 +1437,8 @@
 						}
 					}
 				}, this );
+			
+			return this;
 		},
 
 		/**
@@ -1504,7 +1519,7 @@
 			// (unless 'options.create' is false).
 			if ( _.isObject( attributes ) ) {
 				if ( model ) {
-					model.set( attributes, options );
+					model.set( model.parse ? model.parse( attributes ) : attributes, options );
 				}
 				else if ( !options || ( options && options.create !== false ) ) {
 					model = this.build( attributes, options );
@@ -1526,9 +1541,9 @@
 		if ( !( model instanceof Backbone.Model ) ) {
 			var attrs = model;
 			options.collection = this;
-			
-			if ( typeof this.model.build !== 'undefined' ) {
-				model = this.model.build( attrs, options );
+
+			if ( typeof this.model.findOrCreate !== 'undefined' ) {
+				model = this.model.findOrCreate( attrs, options );
 			}
 			else {
 				model = new this.model( attrs, options );
@@ -1560,22 +1575,16 @@
 
 		//console.debug( 'calling add on coll=%o; model=%o, options=%o', this, models, options );
 		_.each( models, function( model ) {
-				if ( !( model instanceof Backbone.Model ) ) {
-					// Try to find 'model' in Backbone.store. If it already exists, set the new properties on it.
-					var existingModel = Backbone.Relational.store.find( this.model, model[ this.model.prototype.idAttribute ] );
-					if ( existingModel ) {
-						existingModel.set( existingModel.parse ? existingModel.parse( model ) : model, options );
-						model = existingModel;
-					}
-					else {
-						model = Backbone.Collection.prototype._prepareModel.call( this, model, options );
-					}
-				}
+			if ( !( model instanceof Backbone.Model ) ) {
+				// `_prepareModel` attempts to find `model` in Backbone.store through `findOrCreate`,
+				// and sets the new properties on it if is found. Otherwise, a new model is instantiated.
+				model = Backbone.Collection.prototype._prepareModel.call( this, model, options );
+			}
 
-				if ( model instanceof Backbone.Model && !this.get( model ) && !this.getByCid( model ) ) {
-					modelsToAdd.push( model );
-				}
-			}, this );
+			if ( model instanceof Backbone.Model && !this.get( model ) && !this.getByCid( model ) ) {
+				modelsToAdd.push( model );
+			}
+		}, this );
 
 
 		// Add 'models' in a single batch, so the original add will only be called once (and thus 'sort', etc).
@@ -1583,8 +1592,8 @@
 			add.call( this, modelsToAdd, options );
 
 			_.each( modelsToAdd, function( model ) {
-					this.trigger( 'relational:add', model, this, options );
-				}, this );
+				this.trigger( 'relational:add', model, this, options );
+			}, this );
 		}
 		
 		return this;
